@@ -1,15 +1,17 @@
 
-// TODO: handler for format error
+// TODO: add support send file
 // TODO: handler for slow signal
 // TODO: add targets on server
+// TODO: minify key for data object
 
-import * as stimulus from 'stimulus';
+import get_uuid from './get_uuid.js';
+import TurboError from './TurboError.js';
 
 const STORE = { ws: null };
 const hash_controller = {};
 const hash_request = {};
 
-export default function ({ url }) {
+export default function ({ url, stimulus }) {
   let EXIST_CONNECT = false;
   if (!EXIST_CONNECT) {
     EXIST_CONNECT = true;
@@ -22,12 +24,17 @@ export default function ({ url }) {
         }, 1000);
       }
     };
-    create_connect(data).then(set_ws).catch(err => console.log('Fail first connect', err));
+    return create_connect(data).then(set_ws).then(() => {
+      let TurboController = get_turbo_controller(stimulus);
+      return {
+        TurboController,
+        createTurboController(application, list) { _createTurboController(TurboController, application, list) }
+      };
+    }).catch(err => console.log('Fail first connect', err));
   }
-  return { TurboController, createTurboController };
 }
 
-function createTurboController(application, list) {
+function _createTurboController(TurboController, application, list) {
   list.forEach(el => {
     application.register(el, class extends TurboController {});
   });
@@ -41,18 +48,11 @@ function create_connect({ url, reconnect }) {
 
     ws.onopen = function() {
       console.log("Соединение установлено.");
-      // ws.send('From client');
       resolve(ws);
     };
 
     ws.onclose = function(event) {
       reconnect();
-      // if (event.wasClean) {
-      //   console.log('Соединение закрыто чисто');
-      // } else {
-      //   console.log('Обрыв соединения'); // например, "убит" процесс сервера
-      // }
-      // console.log('Код: ' + event.code + ' причина: ' + event.reason);
     };
 
     ws.onmessage = function(event) {
@@ -71,11 +71,7 @@ function create_connect({ url, reconnect }) {
         } else if (msg.event === 'patch') {
           apply_patch(msg);
         } else if (msg.event === 'reply') {
-          if (msg.error) {
-            hash_request[msg.id].reject({ error: msg.error, msg });
-          } else {
-            hash_request[msg.id].resolve(msg);
-          }
+          apply_reply(msg);
         }
       } catch (err) {
         console.log(err);
@@ -142,122 +138,129 @@ function apply_patch(msg) {
 }
 
 
-class TurboController extends stimulus.Controller {
+function apply_reply(msg) {
+  if (msg.error) {
+    let error = TurboError.createError(msg.error);
+    hash_request[msg.id].reject({ error, msg });
+  } else {
+    hash_request[msg.id].resolve(msg);
+  }
+}
 
-  constructor(data, option) {
-    super(data);
 
-    if (option && option.disableSubmit) {
-      this.element.onsubmit = function (e) {
-        e.preventDefault();
-      };
+function get_turbo_controller(stimulus) {
+
+  return class TurboController extends stimulus.Controller {
+
+    constructor(data, option) {
+      super(data);
+
+      if (option && option.disableSubmit) {
+        this.element.onsubmit = function (e) {
+          e.preventDefault();
+        };
+      }
+
+      var controller = this._controller = this.element.getAttribute('data-controller');
+
+      var methods = Array.from(this.element.querySelectorAll('[data-action]'))
+        .map(el => el.getAttribute('data-action'))
+        .map(el => el.split('->')[1])
+        .map(el => el.split('#')[1])
+      ;
+
+      methods.forEach(method => {
+        if (this[method]) {
+          return;
+        }
+        this[method] = function (e) {
+          this.mtd({ method, e, autoHandleError: true });
+        };
+      });
     }
 
-    var controller = this._controller = this.element.getAttribute('data-controller');
 
-    var methods = Array.from(this.element.querySelectorAll('[data-action]'))
-      .map(el => el.getAttribute('data-action'))
-      .map(el => el.split('->')[1])
-      .map(el => el.split('#')[1])
-    ;
+    get ws() {
+      return STORE.ws;
+    }
 
-    methods.forEach(method => {
-      if (this[method]) {
-        return;
+    mtd({ controller, method, e, targets, autoHandleError = false }) {
+
+      var dataset = JSON.parse(JSON.stringify(this.element.dataset));
+      delete dataset.controller;
+
+      var body = {
+        path: `${controller || this._controller}.${method}`,
+        dataset,
+        targets: targets || this._get_targets(),
+        e: { dataset: e.target.dataset },
+        id: get_uuid()+'_'+Date.now(),
+      };
+      console.log('to [WS] => ', body);
+      // var check_duration;
+      var p = new Promise((resolve, reject) => {
+        var start = Date.now();
+        this.ws.send(JSON.stringify(body));
+        hash_request[body.id] = { resolve, reject, controller: this, start };
+        // check_duration = setInterval(() => {
+        //   if (Date.now() - hash_request[data.id].start > 400) {
+        //     console.log('SHOW LOADER');
+        //   }
+        // }, 100);
+      }).then(res => {
+        // console.log('Duration', (Date.now() - hash_request[data.id].start));
+        console.log('REPLY', res);
+        hash_request[body.id] = null;
+        return res;
+        // clearInterval(check_duration);
+      });
+
+      if (autoHandleError) {
+        p.catch(data_with_error => {
+          // console.log('Duration', Date.now() - hash_request[data.msg.id].start);
+          console.log('CATCH', data_with_error);
+          this.handleError(data_with_error);
+          hash_request[body.id] = null;
+          // clearInterval(check_duration);
+        });
       }
-      this[method] = function (e) {
-        this.mtd({ method, e });
-      };
-    });
-  }
+
+      return p;
+    }
 
 
-  get ws() {
-    return STORE.ws;
-  }
+    _get_targets() {
+      const targets = {};
+      let targets_keys = Object.getOwnPropertyNames(Object.getPrototypeOf(this))
+        .filter(k => /Target$/.test(k))
+        .filter(k => !/^has/.test(k))
+      ;
+      targets_keys.forEach(k => {
+        targets[k.replace(/Target$/, '')] = {
+          value: this[k].value,
+        };
+      });
+      return targets;
+    }
 
-  mtd({ controller, method, e }) {
+    connect() {
+      var key = this.element.getAttribute('data-t-key') || '';
+      hash_controller[this._controller+(key ? ('::'+key) : '')] = this;
+    }
 
-    var dataset = JSON.parse(JSON.stringify(this.element.dataset));
-    delete dataset.controller;
+    disconnect() {
+      var key = this.element.getAttribute('data-t-key') || '';
+      hash_controller[this._controller+(key ? ('::'+key) : '')] = null;
+    }
 
-    var body = {
-      path: `${controller || this._controller}.${method}`,
-      dataset,
-      targets: this._get_targets(),
-      e: { dataset: e.target.dataset },
-      id: get_uuid()+'_'+Date.now(),
-    };
-    console.log('to [WS] => ', body);
-    // var check_duration;
-    return new Promise((resolve, reject) => {
-      var start = Date.now();
-      this.ws.send(JSON.stringify(body));
-      hash_request[body.id] = { resolve, reject, controller: this, start };
-      // check_duration = setInterval(() => {
-      //   if (Date.now() - hash_request[data.id].start > 400) {
-      //     console.log('SHOW LOADER');
-      //   }
-      // }, 100);
-    }).then(res => {
-      // console.log('Duration', (Date.now() - hash_request[data.id].start));
-      console.log('REPLY', res);
-      hash_request[body.id] = null;
-      return res;
-      // clearInterval(check_duration);
-    }).catch(data => {
-      // console.log('Duration', Date.now() - hash_request[data.msg.id].start);
-      console.log('CATCH');
-      this.handleError(data);
-      hash_request[body.id] = null;
-      // clearInterval(check_duration);
-    });
-  }
-
-
-  _get_targets() {
-    const targets = {};
-    let targets_keys = Object.getOwnPropertyNames(Object.getPrototypeOf(this))
-      .filter(k => /Target$/.test(k))
-      .filter(k => !/^has/.test(k))
-    ;
-    targets_keys.forEach(k => {
-      targets[k.replace(/Target$/, '')] = {
-        value: this[k].value,
-      };
-    });
-    return targets;
-  }
-
-  connect() {
-    var key = this.element.getAttribute('data-t-key') || '';
-    hash_controller[this._controller+(key ? ('::'+key) : '')] = this;
-  }
-
-  disconnect() {
-    var key = this.element.getAttribute('data-t-key') || '';
-    hash_controller[this._controller+(key ? ('::'+key) : '')] = null;
-  }
-
-  handleError({ error, msg }) {
-    console.log('Error', error, msg);
+    handleError({ error, msg }) {
+      console.log('handleError', error, msg);
+    }
   }
 }
 
 
 
-const get_uuid = (function () {
-  var IDX = 36, HEX='';
-  while (IDX--) {
-    HEX += IDX.toString(36);
-  }
 
-  return function (len) {
-    var str = '';
-    var num = len || 11;
-    while (num--) {
-      str += HEX[Math.random() * 36 | 0];
-    }
-    return str;
-  };
-}());
+
+

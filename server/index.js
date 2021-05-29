@@ -4,8 +4,9 @@ const Sock = require('./Sock.js');
 
 const turbo = module.exports;
 
+turbo.TurboError = require('./TurboError.js');
 
-turbo.init = function ({ server, controllers }) {
+turbo.init = function ({ server, controllers, handleError }) {
   const wss = new WebSocket.Server({ server });
 
   // wss.on('headers', function(headers) {
@@ -33,8 +34,14 @@ turbo.init = function ({ server, controllers }) {
         var data = await controller.exec(method, ws.__sock, { dataset: msg.dataset, targets: msg.targets, e: msg.e });
         ws.__sock.reply({ path: msg.path, data: data || null, id: msg.id });
       } catch (err) {
-        ws.__sock.reply({ path: msg.path, error: err.message, id: msg.id });
-        console.log(err);
+        var error;
+        if (err instanceof turbo.TurboError) {
+          error = JSON.stringify(err);
+        } else {
+          error = err.message;
+        }
+        ws.__sock.reply({ path: msg.path, error, id: msg.id });
+        handleError ? handleError(err) : console.log(err);
       }
     });
   });
