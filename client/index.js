@@ -1,50 +1,69 @@
 
-// TODO: add support send file
+// TODO: add support auth or custom methods
 // TODO: handler for slow signal
+// TODO: add support send file
 // TODO: add targets on server
 // TODO: minify key for data object
 
 import get_uuid from './get_uuid.js';
 import TurboError from './TurboError.js';
+import Wire from './Wire.js';
 
 const STORE = { ws: null };
 const hash_controller = {};
 const hash_request = {};
 
-export default function ({ url, stimulus }) {
-  let EXIST_CONNECT = false;
-  if (!EXIST_CONNECT) {
-    EXIST_CONNECT = true;
-    var data = {
-      url,
-      reconnect: function() {
-        setTimeout(() => {
-          console.log('try reconnect');
-          create_connect({ url, reconnect: data.reconnect }).then(set_ws).catch(err => console.log('Fail repeat connect', err));
-        }, 1000);
-      }
-    };
-    return create_connect(data).then(set_ws).then(() => {
-      let TurboController = get_turbo_controller(stimulus);
-      return {
-        TurboController,
-        createTurboController(application, list) { _createTurboController(TurboController, application, list) }
-      };
-    }).catch(err => console.log('Fail first connect', err));
+export default class Turbo {
+  constructor({ url, stimulus }) {
+    this._url = url;
+    this._stimulus = stimulus;
+    this._EXIST_CONNECT = false;
   }
+
+  start() {
+    const me = this;
+    if (!me._EXIST_CONNECT) {
+      me._EXIST_CONNECT = true;
+      var wire = new Wire(STORE);
+      var data = {
+        url: me._url,
+        wire,
+        reconnect: function() {
+          setTimeout(() => {
+            console.log('try reconnect');
+            create_connect({ url: me._url, wire, reconnect: data.reconnect }).then(set_ws).catch(err => console.log('Fail repeat connect', err));
+          }, 1000);
+        }
+      };
+      return create_connect(data).then(set_ws).then(ws => {
+        let TurboController = get_turbo_controller(me._stimulus, wire);
+        return {
+          TurboController,
+          wire,
+          createControllers(application, list) { _autoCreateControllers(TurboController, application, list) }
+        };
+      }).catch(err => console.log('Fail first connect', err));
+    }
+  }
+
 }
 
-function _createTurboController(TurboController, application, list) {
+
+function set_ws(ws) {
+  STORE.ws = ws;
+}
+
+function _autoCreateControllers(TurboController, application, list) {
   list.forEach(el => {
     application.register(el, class extends TurboController {});
   });
 }
 
-function set_ws(ws) { STORE.ws = ws; }
 
-function create_connect({ url, reconnect }) {
+
+function create_connect({ url, wire, reconnect }) {
   return new Promise((resolve, reject) => {
-    let ws = new WebSocket(url);
+    let ws = new WebSocket(url, ['TEST']);
 
     ws.onopen = function() {
       console.log("Соединение установлено.");
@@ -60,6 +79,11 @@ function create_connect({ url, reconnect }) {
       // console.log("Received " + event.data);
       try {
         var msg = JSON.parse(event.data);
+
+        if (msg.c_ev) {
+          return Wire.receive(msg);
+        }
+
         // console.log({ msg });
         if (msg.event === 'replace') {
           apply_replace(msg);
@@ -74,7 +98,7 @@ function create_connect({ url, reconnect }) {
           apply_reply(msg);
         }
       } catch (err) {
-        console.log(err);
+        console.log('[turbo]', err);
       }
     };
 
@@ -82,8 +106,6 @@ function create_connect({ url, reconnect }) {
       console.log("Ошибка ", error);
       reject(error);
     };
-
-    return ws;
   });
 }
 
@@ -148,7 +170,7 @@ function apply_reply(msg) {
 }
 
 
-function get_turbo_controller(stimulus) {
+function get_turbo_controller(stimulus, wire) {
 
   return class TurboController extends stimulus.Controller {
 
@@ -160,6 +182,8 @@ function get_turbo_controller(stimulus) {
           e.preventDefault();
         };
       }
+
+      this._wire = wire;
 
       var controller = this._controller = this.element.getAttribute('data-controller');
 
@@ -179,6 +203,9 @@ function get_turbo_controller(stimulus) {
       });
     }
 
+    get wire() {
+      return this._wire;
+    }
 
     get ws() {
       return STORE.ws;

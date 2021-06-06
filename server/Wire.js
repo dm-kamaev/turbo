@@ -1,6 +1,6 @@
 'use strict';
 
-module.exports = class Sock {
+module.exports = class Wire {
   constructor(ws, req) {
     this._ws = ws;
     this._req = req;
@@ -71,6 +71,11 @@ module.exports = class Sock {
       id,
     };
     this._ws.send(JSON.stringify(data));
+  }
+
+
+  emit(name, data) {
+    this._ws.send(JSON.stringify({ c_ev: name, data }));
   }
 }
 
