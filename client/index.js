@@ -1,6 +1,7 @@
 
-// TODO: add support auth or custom methods
 // TODO: handler for slow signal
+// TODO: add handler for global error
+// TODO: add custom rpc method
 // TODO: add support send file
 // TODO: add targets on server
 // TODO: minify key for data object
@@ -14,9 +15,10 @@ const hash_controller = {};
 const hash_request = {};
 
 export default class Turbo {
-  constructor({ url, stimulus }) {
+  constructor({ url, stimulus, spinner }) {
     this._url = url;
     this._stimulus = stimulus;
+    this._spinner = spinner;
     this._EXIST_CONNECT = false;
   }
 
@@ -36,7 +38,7 @@ export default class Turbo {
         }
       };
       return create_connect(data).then(set_ws).then(ws => {
-        let TurboController = get_turbo_controller(me._stimulus, wire);
+        const TurboController = get_turbo_controller(me._stimulus, wire, this._spinner);
         return {
           TurboController,
           wire,
@@ -170,13 +172,13 @@ function apply_reply(msg) {
 }
 
 
-function get_turbo_controller(stimulus, wire) {
+function get_turbo_controller(stimulus, wire, spinnerData) {
 
   return class TurboController extends stimulus.Controller {
 
     constructor(data, option) {
       super(data);
-
+      // TODO: rewrite to method settings() {}
       if (option && option.disableSubmit) {
         this.element.onsubmit = function (e) {
           e.preventDefault();
@@ -212,47 +214,68 @@ function get_turbo_controller(stimulus, wire) {
     }
 
     mtd({ controller, method, e, targets, autoHandleError = false }) {
-
+      const me = this;
       var dataset = JSON.parse(JSON.stringify(this.element.dataset));
       delete dataset.controller;
+
+      targets = targets || this._get_targets();
 
       var body = {
         path: `${controller || this._controller}.${method}`,
         dataset,
-        targets: targets || this._get_targets(),
+        targets,
         e: { dataset: e.target.dataset },
         id: get_uuid()+'_'+Date.now(),
       };
       console.log('to [WS] => ', body);
-      // var check_duration;
+
+      const spinner = new Spinner({
+        getController: () => {
+          if (spinnerData) {
+            return me._get_controller(spinnerData.controllerName);
+          } else {
+            return {
+              hide: () => {},
+              show: () => {}
+            };
+          }
+        }
+      });
+
       var p = new Promise((resolve, reject) => {
-        var start = Date.now();
+        const start = Date.now();
         this.ws.send(JSON.stringify(body));
         hash_request[body.id] = { resolve, reject, controller: this, start };
-        // check_duration = setInterval(() => {
-        //   if (Date.now() - hash_request[data.id].start > 400) {
-        //     console.log('SHOW LOADER');
-        //   }
-        // }, 100);
+        spinner.show(start);
       }).then(res => {
         // console.log('Duration', (Date.now() - hash_request[data.id].start));
         console.log('REPLY', res);
+
+        spinner.hide();
+
         hash_request[body.id] = null;
         return res;
-        // clearInterval(check_duration);
+      }).catch(data_with_error => {
+        // console.log('Duration', Date.now() - hash_request[data.msg.id].start);
+
+        hash_request[body.id] = null;
+
+        spinner.hide();
+
+        if (autoHandleError) {
+          this.handleError(data_with_error);
+        } else {
+          throw data_with_error;
+        }
       });
 
-      if (autoHandleError) {
-        p.catch(data_with_error => {
-          // console.log('Duration', Date.now() - hash_request[data.msg.id].start);
-          console.log('CATCH', data_with_error);
-          this.handleError(data_with_error);
-          hash_request[body.id] = null;
-          // clearInterval(check_duration);
-        });
-      }
-
       return p;
+    }
+
+    _get_controller(identifier) {
+      return this.application.controllers.find(controller => {
+        return controller.context.identifier === identifier;
+      });
     }
 
 
@@ -263,9 +286,20 @@ function get_turbo_controller(stimulus, wire) {
         .filter(k => !/^has/.test(k))
       ;
       targets_keys.forEach(k => {
+        var target = this[k];
+
         targets[k.replace(/Target$/, '')] = {
           value: this[k].value,
         };
+
+        // if (target.nodeName === 'INPUT' && target.type === 'file') {
+        //   targets[k.replace(/Target$/, '')] = {
+        //     is_file: true,
+        //     value: this[k].value,
+        //   };
+        // } else {
+
+        // }
       });
       return targets;
     }
@@ -282,6 +316,46 @@ function get_turbo_controller(stimulus, wire) {
 
     handleError({ error, msg }) {
       console.log('handleError', error, msg);
+    }
+  }
+}
+
+
+
+class Spinner {
+  constructor({ getController }) {
+    this._getController = getController;
+
+    this._check_duration = null;
+    this._show_loader = false
+    this._start_loader_time = null;
+  }
+
+  show(start_time_for_request) {
+    const me = this;
+    me._check_duration = setInterval(() => {
+      if (!me._show_loader && (Date.now() - start_time_for_request) > 400) {
+        me._show_loader = true;
+        this._getController().show();
+        me._start_loader_time = Date.now();
+      }
+    }, 100);
+  }
+
+  hide() {
+    const me = this;
+    const lag_time = 100;
+    if ((Date.now() - me._start_loader_time) > lag_time) {
+      clearInterval(me._check_duration);
+      me._show_loader = false;
+      this._getController().hide();
+    // getting rid of flickering
+    } else {
+      setTimeout(() => {
+        clearInterval(me._check_duration);
+        me._show_loader = false;
+        this._getController().hide();
+      }, 400);
     }
   }
 }
