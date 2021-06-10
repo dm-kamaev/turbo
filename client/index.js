@@ -8,12 +8,15 @@
 import get_uuid from './get_uuid.js';
 import TurboError from './TurboError.js';
 import Wire from './Wire.js';
+import Spinner from './Spinner.js';
 
 const STORE = { ws: null };
 const hash_controller = {};
 const hash_request = {};
 
-export default class Turbo {
+export { TurboError };
+
+export class Turbo {
   constructor({ url, stimulus, spinner }) {
     this._url = url;
     this._stimulus = stimulus;
@@ -149,12 +152,18 @@ function apply_patch(msg) {
   if (!$el) {
     throw new Error(`Not found target ${msg.target} for controller ${msg.controller}`);
   }
-  let { style, ...other } = msg.props;
+  const { classList, style, ...other } = msg.props;
+
   if (style) {
     Object.keys(style).forEach(k => {
       $el.style[k] = style[k];
     });
   }
+
+  if (classList) {
+    $el.classList = classList instanceof Array ? classList.join(' ') : classList;
+  }
+
   Object.keys(other).forEach(k => {
     $el[k] = other[k];
   });
@@ -162,12 +171,15 @@ function apply_patch(msg) {
 
 
 function apply_reply(msg) {
+  const id = msg.id;
   if (msg.error) {
     let error = TurboError.createError(msg.error);
-    hash_request[msg.id].reject({ error, msg });
+    hash_request[id].reject({ error, msg });
   } else {
-    hash_request[msg.id].resolve(msg);
+    hash_request[id].resolve(msg);
   }
+  // TODO: You should in future: if keys(with null) > 100000, filter keys
+  hash_request[id] = null;
 }
 
 
@@ -227,11 +239,14 @@ function get_turbo_controller(stimulus, wire, spinnerData) {
 
       var body = {
         path: `${controller || this._controller}.${method}`,
-        dataset,
+        dataset: Object.keys(dataset).length ? dataset : null,
         targets,
         e: { dataset: e.target.dataset },
         id: get_uuid()+'_'+Date.now(),
       };
+      if (!body.dataset) {
+        delete body.dataset;
+      }
       console.log('to [WS] => ', body);
 
       const spinner = new Spinner({
@@ -247,23 +262,20 @@ function get_turbo_controller(stimulus, wire, spinnerData) {
         }
       });
 
-      var p = new Promise((resolve, reject) => {
+      const p = new Promise((resolve, reject) => {
         const start = Date.now();
-        this.ws.send(JSON.stringify(body));
         hash_request[body.id] = { resolve, reject, controller: this, start };
-        spinner.show(start);
+        this.ws.send(JSON.stringify(body));
+        spinner.show(start, this.ws);
       }).then(res => {
         // console.log('Duration', (Date.now() - hash_request[data.id].start));
         console.log('REPLY', res);
 
         spinner.hide();
 
-        hash_request[body.id] = null;
         return res;
       }).catch(data_with_error => {
         // console.log('Duration', Date.now() - hash_request[data.msg.id].start);
-
-        hash_request[body.id] = null;
 
         spinner.hide();
 
@@ -319,54 +331,9 @@ function get_turbo_controller(stimulus, wire, spinnerData) {
       hash_controller[this._controller+(key ? ('::'+key) : '')] = null;
     }
 
-    handleError({ error, msg }) {
-      console.log('handleError', error, msg);
+    handleError(error) {
+      console.log('handleError', error);
     }
   }
 }
-
-
-
-class Spinner {
-  constructor({ getController }) {
-    this._getController = getController;
-
-    this._check_duration = null;
-    this._show_loader = false
-    this._start_loader_time = null;
-  }
-
-  show(start_time_for_request) {
-    const me = this;
-    me._check_duration = setInterval(() => {
-      if (!me._show_loader && (Date.now() - start_time_for_request) > 400) {
-        me._show_loader = true;
-        this._getController().show();
-        me._start_loader_time = Date.now();
-      }
-    }, 100);
-  }
-
-  hide() {
-    const me = this;
-    const lag_time = 100;
-    if ((Date.now() - me._start_loader_time) > lag_time) {
-      clearInterval(me._check_duration);
-      me._show_loader = false;
-      this._getController().hide();
-    // getting rid of flickering
-    } else {
-      setTimeout(() => {
-        clearInterval(me._check_duration);
-        me._show_loader = false;
-        this._getController().hide();
-      }, 400);
-    }
-  }
-}
-
-
-
-
-
 

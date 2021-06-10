@@ -5,10 +5,11 @@ const Wire = require('./Wire.js');
 
 
 const Turbo = module.exports = class Turbo {
-  constructor() {
+  constructor(option = { debug: false }) {
     this._controllers = {};
     this._controllerEvents = {};
     this._handleError = null;
+    this._log = option.debug ? console.log : () => {};
   }
 
   setControllers(...controllers) {
@@ -59,13 +60,13 @@ const Turbo = module.exports = class Turbo {
       //   console.log(Array.from(wss.clients).filter(el => el.readyState === WebSocket.OPEN).length);
       // }, 10000);
       ws.on('message', async function (message) {
-        console.log('received: %s', message);
+        me._log('received: %s', message);
 
         try {
           var msg = JSON.parse(message);
         // TODO: add handle error
         } catch (err) {
-          return console.log(err);
+          return handleError ? handleError(err) : console.log(err);
         }
 
         if (!msg.c_ev) {
@@ -74,7 +75,7 @@ const Turbo = module.exports = class Turbo {
           try {
             await me._handle_custom_event(ws.__wire, msg);
           } catch (err) {
-            console.log(err);
+            return handleError ? handleError(err) : console.log(err);
           }
         }
       });
@@ -92,7 +93,7 @@ const Turbo = module.exports = class Turbo {
         throw new Error(`Not found controller "${controller_name}"`);
       }
 
-      var result = await controller.exec(method, wire, { dataset: msg.dataset, targets: msg.targets, e: msg.e });
+      var result = await controller.exec(method, wire, { dataset: msg.dataset || {}, targets: msg.targets || {}, e: msg.e });
       wire.reply({ path: msg.path, data: result || null, id: msg.id });
     } catch (err) {
       var error;

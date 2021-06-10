@@ -23,6 +23,10 @@ export default class Wire {
   get ws() { return this._store.ws; }
 
   emit(name, data) {
+    // CLOSING
+    if (this.ws.readyState === 3) {
+      throw new Error('Connection is closing');
+    }
     this.ws.send(JSON.stringify({ c_ev: this._get_c_ev(name), data }));
   }
 
