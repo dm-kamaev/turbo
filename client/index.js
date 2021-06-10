@@ -1,5 +1,4 @@
 
-// TODO: handler for slow signal
 // TODO: add handler for global error
 // TODO: add custom rpc method
 // TODO: add support send file
@@ -178,8 +177,8 @@ function get_turbo_controller(stimulus, wire, spinnerData) {
 
     constructor(data, option) {
       super(data);
-      // TODO: rewrite to method settings() {}
-      if (option && option.disableSubmit) {
+
+      if (this.settings().disableSubmit) {
         this.element.onsubmit = function (e) {
           e.preventDefault();
         };
@@ -203,6 +202,12 @@ function get_turbo_controller(stimulus, wire, spinnerData) {
           this.mtd({ method, e, autoHandleError: true });
         };
       });
+    }
+
+    settings() {
+      return {
+        disableSubmit: false,
+      }
     }
 
     get wire() {
